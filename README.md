@@ -166,7 +166,7 @@ Each run writes to `<save_directory>/runs/<task_name>/`:
 | `Team_Results/Team_<id>/Eval_<i>/`                 | `team.txt`, `run_history.log` (full transcript), per-worker transcripts, feature decisions |
 | `Visuals/`                                         | Pareto front plots per generation and GIFs of the run                                      |
 
-SLURM logs go to `Logs/name_<jobid>_<task>.out` and `.err`. Ray can stop forwarding worker
+Ray can stop forwarding worker
 output to the log during a long run; file timestamps under `Team_Results/` are the
 reliable sign of progress.
 
