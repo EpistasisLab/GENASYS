@@ -27,7 +27,6 @@ Models run either on local Ollama servers or on Azure.
     - [1. A single run](#1-a-single-run)
   - [Outputs](#outputs)
   - [How a team run can end](#how-a-team-run-can-end)
-  - [License](#license)
 
 ---
 
@@ -187,7 +186,3 @@ Only `provider` failures are retried, and only they count toward
 Full tracebacks are in each evaluation's `run_history.log`.
 
 ---
-
-## License
-
-MIT. Copyright (c) 2026 Epistasis Lab at Cedars-Sinai. See [LICENSE](LICENSE).
