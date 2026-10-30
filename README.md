@@ -1,6 +1,6 @@
 # GENASYS
 
-**Genetic Evolution of Network Agent SYStems**
+**Genetic Evolution of Networked Agent SYStems**
 
 GENASYS evolves teams of LLM agents that engineer features for a clinical prediction
 task. Each team reads a feature catalog built from the cohort, consults literature
