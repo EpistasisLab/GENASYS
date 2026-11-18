@@ -39,13 +39,15 @@ class Reproduction:
             crossover_prob (float): Probability that an offspring is produced by
                 crossover; otherwise it is produced by mutation. A crossover child
                 is then mutated with probability 1 - crossover_prob.
-            prob_mut_blueprint (float): Per-agent probability of the "whole new
-                blueprint" mutation outcome (new model + fresh parameters).
-            prob_mut_parameters (float): Per-agent probability of the "mutate
-                mut_parameters_cnt parameters" outcome. With prob_mut_blueprint it
-                must sum to <= 1; the remainder keeps the agent unchanged.
-            mut_parameters_cnt (int): Parameters swapped by the "mutate parameters"
-                outcome (clamped per model to what it exposes).
+            prob_mut_blueprint (float): Per-agent probability of a new worker
+                config: a different model with random parameters.
+            prob_mut_parameters (float): Per-agent probability of tuning the current
+                config: up to mut_parameters_cnt of its model's parameters set to
+                different values; a model with nothing to tune gets a new worker
+                config instead. With prob_mut_blueprint it must sum to <= 1; the
+                remainder keeps the agent unchanged.
+            mut_parameters_cnt (int): Parameters changed when tuning (clamped per
+                model to the parameters that have a choice).
             prob_mut_topology (float): Probability of a topology-level mutation,
                 which adds or removes exactly one teammate.
         """
@@ -123,6 +125,16 @@ class Reproduction:
         model = self._draw(rng, self.model_pool)
         return BluePrint(model=model,
                          parameters=self.generate_random_model_parameters(rng, model))
+
+    def new_model_blueprint(self, rng: np.random.Generator, current: BluePrint) -> BluePrint:
+        """A new worker config: a model other than ``current``'s, chosen uniformly from
+        the rest of the pool, with random values for its parameters. With a single
+        model in the pool there is no other, and ``current`` is returned unchanged."""
+        others = [m for m in self.model_pool if m != current.get_model()]
+        if not others:
+            return current
+        model = self._draw(rng, others)
+        return BluePrint(model=model, parameters=self.generate_random_model_parameters(rng, model))
 
     def generate_random_model_parameters(self, rng: np.random.Generator, model: str) -> Dict[str, Any]:
         """A random value for every parameter in ``model``'s param_space."""
@@ -250,12 +262,16 @@ class Reproduction:
         recorded with no lineage by omission.
 
         Agent-level: every agent on the team rolls one of three outcomes:
-            1. with probability ``prob_mut_blueprint``, get a whole new blueprint
-               (a fresh model + a fresh parameter set),
-            2. with probability ``prob_mut_parameters``, swap up to
-               ``mut_parameters_cnt`` of its current model's parameters (clamped to
-               how many parameters that model actually has), or
+            1. with probability ``prob_mut_blueprint``, a new worker config: a
+               different model with random parameters (``new_model_blueprint``),
+            2. with probability ``prob_mut_parameters``, tune the current config:
+               give up to ``mut_parameters_cnt`` of its model's parameters a
+               different value (clamped to the parameters that have a choice); a
+               model with nothing to tune gets outcome 1 instead, or
             3. otherwise keep the blueprint unchanged.
+        Outcomes 1 and 2 always change the agent (unless the pool holds a single
+        model with nothing to tune), so 1 - prob_mut_blueprint - prob_mut_parameters
+        is the chance an agent is left as it is.
 
         Topology-level: with probability ``prob_mut_topology``, add or remove exactly
         one teammate. Only moves that land on an allowed team are offered, so a
@@ -273,24 +289,31 @@ class Reproduction:
             roll = rng.random()
 
             if roll < threshold_blueprint:
-                # Outcome 1: a whole new blueprint (new model + fresh params).
-                roster[role] = self.generate_random_blueprint(rng)
+                # Outcome 1, a new worker config: a different model, random parameters.
+                roster[role] = self.new_model_blueprint(rng, roster[role])
 
             elif roll < threshold_parameters:
-                # Outcome 2: mutate a subset of the current model's parameters. Clamp
-                # the count to the parameters the model has — a user asking for 2 when
-                # only 1 exists would otherwise make rng.choice(replace=False) raise.
-                # Single-value knobs (fixed settings such as Ollama's num_predict) are
-                # skipped: redrawing one can never change it, so the mutation is wasted.
+                # Outcome 2, tune the current config: give up to mut_parameters_cnt of
+                # the model's parameters a different value. Only parameters with a
+                # choice can change (fixed settings such as Ollama's num_predict cannot),
+                # and the count is clamped to them, since rng.choice(replace=False)
+                # cannot pick more than exist. A model with none has nothing to tune,
+                # so the only change left is outcome 1.
                 blueprint = roster[role]
                 model_space = self.model_config.param_space(blueprint.get_model())
                 mutable = sorted(k for k, v in model_space.items() if len(v) > 1)
-                n = min(self.mut_parameters_cnt, len(mutable))
-                if n:
+                if not mutable:
+                    roster[role] = self.new_model_blueprint(rng, blueprint)
+                else:
+                    n = min(self.mut_parameters_cnt, len(mutable))
                     for param in rng.choice(mutable, n, replace=False):
-                        blueprint.parameters[str(param)] = self._draw(rng, model_space[str(param)])
+                        param = str(param)
+                        current = blueprint.parameters.get(param)
+                        others = [v for v in model_space[param] if v != current]
+                        blueprint.parameters[param] = self._draw(rng, others)
 
             # Outcome 3 (the remaining probability mass): keep the blueprint as is.
+            continue
 
         # Topology-level mutation: add or remove exactly one teammate. The roster
         # keys ARE the team, so this operates directly on it.
