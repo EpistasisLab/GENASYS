@@ -108,8 +108,8 @@ def probe_retriever(retriever: Optional[Retriever], catalog: Dict[str, CatalogEn
              "it is unused.", source="retriever")
         return
     query = next(iter(catalog.values())).match_text.strip()
-    passages = check_passages(retriever.retrieve(query, 1), query, 1, retriever)
-    assert passages, (f"{type(retriever).__name__}.retrieve({query!r}, k=1) found "
+    passages = check_passages(retriever.retrieve(query), query, retriever)
+    assert passages, (f"{type(retriever).__name__}.retrieve({query!r}) found "
                       f"nothing; is its corpus empty?")
 
 
