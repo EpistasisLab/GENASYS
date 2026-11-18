@@ -1,7 +1,7 @@
 """The ``print_dataset_schema`` tool: what the raw table holds.
 
 The catalog says what a feature means; this says what is in the table: every column
-with its dtype and an example value, plus three sample rows. It reads
+with its dtype and an example value; no rows are printed. It reads
 ``ToolResources.dataset``, the dev split, so the holdout never reaches an agent, and
 leaves out the target, which an agent would otherwise propose as a feature. Offered as a
 tool rather than rendered into a prompt, so a run that never needs the schema never
@@ -26,7 +26,7 @@ def dataset_schema_tool(resources: ToolResources) -> BaseTool:
 
     @tool(PRINT_DATASET_SCHEMA)
     def print_dataset_schema() -> str:
-        """Describe the dataset: every available column with its dtype and an example value, plus three sample rows. The prediction target is excluded. Use when you need to know what the data actually contains before proposing features."""
+        """Describe the dataset: every available column with its dtype and an example value. The prediction target is excluded. Use when you need to know what the data actually contains before proposing features."""
         return schema
 
     return print_dataset_schema
