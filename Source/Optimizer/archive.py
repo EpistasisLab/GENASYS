@@ -6,11 +6,11 @@ and assigning each team a unique identifier that is used to save results and rec
 How identity works
 ------------------
 A team's identity is its genome: the roster (which roles are on the team) together with
-every role's blueprint (model and full parameter set), plus the run's recursion_limit.
-The recursion_limit is not a gene -- it is fixed per run by model_config.json -- but it
-bounds how many steps a team may take, so the same roster under a different limit is a
-different experiment and must not share scores. The Archive is handed the limit once, at
-construction, and folds it into every key. compute_team_key turns the genome into one
+every role's blueprint (model and full parameter set), plus the run's recursion_limit and
+model_call_limit. Neither limit is a gene -- both are fixed per run by model_config.json --
+but they bound how many steps and model calls a team may take, so the same roster under
+different limits is a different experiment and must not share scores. The Archive is
+handed the limits once, at construction, and folds them into every key. compute_team_key turns the genome into one
 deterministic sha256 digest; that digest is the archive's internal dedup key.
 
 What the caller sees is a plain sequential integer id (0, 1, 2, ...), handed out in the
@@ -103,14 +103,15 @@ def _evaluations(team: Team) -> Dict[str, List[Any]]:
 
 
 @typechecked
-def compute_team_key(team: Team, recursion_limit: int) -> str:
-    """Fold a team's genome and the run's recursion_limit into a sha256 hex digest.
+def compute_team_key(team: Team, recursion_limit: int, model_call_limit: int) -> str:
+    """Fold a team's genome and the run's two limits into a sha256 hex digest.
 
     Serializing with sort_keys makes the digest independent of dict insertion order,
     so two teams built by different code paths hash identically iff they really are
-    the same genome under the same step budget.
+    the same genome under the same step and model-call budgets.
     """
     canonical = {
+        "model_call_limit": model_call_limit,
         "recursion_limit": recursion_limit,
         "roster": _serialize_roster(team),
     }
@@ -158,15 +159,17 @@ class Archive:
     sequential integer id on the way in.
     """
 
-    def __init__(self, recursion_limit: int) -> None:
+    def __init__(self, recursion_limit: int, model_call_limit: int) -> None:
         """
-        - recursion_limit:
-            The run's step budget (ModelConfig.recursion_limit), folded into every
+        - recursion_limit, model_call_limit:
+            The run's step and model-call budgets (ModelConfig), folded into every
             key and written to the saved JSON so a SeenArchive can tell whether
             another run's scores are comparable.
         """
         assert recursion_limit > 0, f"recursion_limit must be positive: {recursion_limit}."
+        assert model_call_limit > 0, f"model_call_limit must be positive: {model_call_limit}."
         self.recursion_limit = recursion_limit
+        self.model_call_limit = model_call_limit
         # genome digest -> ArchiveRecord. One entry per unique genome.
         self._by_key: Dict[str, ArchiveRecord] = {}
         # Next sequential id to hand out. Monotonic; ids are never reused.
@@ -177,8 +180,8 @@ class Archive:
         return len(self._by_key)
 
     def key(self, team: Team) -> str:
-        """The genome digest of ``team`` under this run's recursion_limit."""
-        return compute_team_key(team, self.recursion_limit)
+        """The genome digest of ``team`` under this run's two limits."""
+        return compute_team_key(team, self.recursion_limit, self.model_call_limit)
 
     def contains(self, team: Team) -> bool:
         """True iff this genome has already been archived (reserved or evaluated)."""
@@ -277,6 +280,7 @@ class Archive:
         """The whole archive as a JSON-serializable dict."""
         return {
             "recursion_limit": self.recursion_limit,
+            "model_call_limit": self.model_call_limit,
             "n_teams": len(self._by_key),
             "teams": [r.to_dict() for r in self.records()],
         }
@@ -304,15 +308,18 @@ class SeenArchive:
     records no lineage, since those are per-run.
 
     Matching uses the same digest as the live Archive, under *this* run's
-    recursion_limit, so only teams measured under the same step budget match. When
+    recursion_limit and model_call_limit, so only teams measured under the same budgets
+    match. When
     one genome appears in several files, the first file wins. Prompts are not part
     of the key: pointing a run at archives produced with different prompt files is
     the caller's responsibility.
     """
 
-    def __init__(self, recursion_limit: int) -> None:
+    def __init__(self, recursion_limit: int, model_call_limit: int) -> None:
         assert recursion_limit > 0, f"recursion_limit must be positive: {recursion_limit}."
+        assert model_call_limit > 0, f"model_call_limit must be positive: {model_call_limit}."
         self.recursion_limit = recursion_limit
+        self.model_call_limit = model_call_limit
         # genome digest -> the per-evaluation record lists needed to replay it.
         self._by_key: Dict[str, Dict[str, Any]] = {}
         # genome digest -> (absolute path of the archive file it was first loaded from,
@@ -321,9 +328,10 @@ class SeenArchive:
         return
 
     @classmethod
-    def from_paths(cls, paths: List[str], recursion_limit: int) -> "SeenArchive":
+    def from_paths(cls, paths: List[str], recursion_limit: int,
+                   model_call_limit: int) -> "SeenArchive":
         """Build a SeenArchive from archive.json paths, in order (earlier files win)."""
-        seen = cls(recursion_limit)
+        seen = cls(recursion_limit, model_call_limit)
         for path in paths:
             seen.load(path)
         return seen
@@ -332,17 +340,19 @@ class SeenArchive:
         """Merge one archive.json into the seen set.
 
         Raises if the path does not exist: a mistyped archive path should fail loudly
-        at startup. A file saved under a different recursion_limit (or in the pre-refactor
-        format) is loaded but warned about, since none of its keys can match this run.
+        at startup. A file saved under a different recursion_limit or model_call_limit (or
+        in an older format without them) is loaded but warned about, since none of its keys
+        can match this run.
         Raises on a loaded entry without an integer id: replays record it as their source.
         """
         path = os.path.abspath(path)
         with open(path) as f:
             data = json.load(f)
-        if data.get("recursion_limit") != self.recursion_limit:
-            warn(f"{path} was saved with recursion_limit={data.get('recursion_limit')} "
-                 f"(this run: {self.recursion_limit}); none of its teams will match.",
-                 source="archive")
+        for name, ours in (("recursion_limit", self.recursion_limit),
+                           ("model_call_limit", self.model_call_limit)):
+            if data.get(name) != ours:
+                warn(f"{path} was saved with {name}={data.get(name)} (this run: {ours}); "
+                     f"none of its teams will match.", source="archive")
         for entry in data.get("teams", []):
             key = entry.get("key")
             if not key or key in self._by_key or not entry.get("performance"):
@@ -362,7 +372,7 @@ class SeenArchive:
         return len(self._by_key)
 
     def key(self, team: Team) -> str:
-        return compute_team_key(team, self.recursion_limit)
+        return compute_team_key(team, self.recursion_limit, self.model_call_limit)
 
     def contains(self, team: Team) -> bool:
         """True iff this genome was evaluated in one of the loaded external archives."""
