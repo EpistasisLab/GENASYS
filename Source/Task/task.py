@@ -20,12 +20,16 @@ from __future__ import annotations
 
 import os
 
+import numpy as np
 import pandas as pd
 from typeguard import typechecked
 
 from .data_split import split_dev_holdout
 
 EXAMPLE_VALUE_CHARS = 120
+# Seeds the draw of each column's example row. Fixed, so every team and every process
+# sees the same schema text (a fair comparison, and a stable, cacheable prompt).
+EXAMPLE_SEED = 0
 
 
 def _clip(value: str, limit: int = EXAMPLE_VALUE_CHARS) -> str:
@@ -38,7 +42,10 @@ def _clip(value: str, limit: int = EXAMPLE_VALUE_CHARS) -> str:
 
 def render_schema_description(df: pd.DataFrame, target_column: str,
                               task_name: str = "") -> str:
-    """Describe ``df`` as name/dtype/example per column plus three sample rows.
+    """Describe ``df`` as name/dtype/example per column. No rows are printed: the
+    agents see the table's shape, not patients' records. Each column's example comes
+    from its own randomly drawn row (among that column's non-empty values, seeded by
+    ``EXAMPLE_SEED``), so the examples together never describe one patient.
 
     Always pass the DEV frame. The target column is omitted: an agent that saw it
     listed as an available column would reasonably propose it as a feature.
@@ -46,10 +53,9 @@ def render_schema_description(df: pd.DataFrame, target_column: str,
     dataset but no Task to read it off.
 
     Example values are clipped. One EHR list column (``DX_NAME_LIST``) holds a
-    pipe-delimited history thousands of characters long, and printing three of them
-    in full made this ~10k tokens — which, returned from the Supervisor's tool, would
-    sit in the message history for the rest of the run. The point of the sample is to
-    show the *shape* of a value, and a clipped one still does that.
+    pipe-delimited history thousands of characters long, and printing it in full
+    would sit in the Supervisor's message history for the rest of the run. The point
+    of the example is to show the *shape* of a value, and a clipped one still does that.
     """
     lines = []
     if task_name:
@@ -61,22 +67,15 @@ def render_schema_description(df: pd.DataFrame, target_column: str,
         "Features:",
     ]
 
-    # For each column, show name, dtype, and a sample value.
+    # For each column, show name, dtype, and an example value from its own random row.
+    rng = np.random.default_rng(EXAMPLE_SEED)
     for col in df.columns:
         if col == target_column:
             continue
         dtype = str(df[col].dtype)
-        sample = _clip(str(df[col].iloc[0])) if len(df) else ""
+        values = df[col].dropna()
+        sample = _clip(str(values.iloc[int(rng.integers(len(values)))])) if len(values) else ""
         lines.append(f"  - {col} ({dtype}) [example: {sample}]")
-
-    lines.append("")
-    lines.append("Sample rows (first 3):")
-    # Drop the target here too. Listing it under "Features:" would invite an agent
-    # to propose it; printing three of its values in the sample rows would do the
-    # same thing less obviously.
-    sample_cols = [c for c in df.columns if c != target_column]
-    sample_rows = df.head(3)[sample_cols].astype(str).map(lambda v: _clip(v, 40))
-    lines.append(sample_rows.to_string(index=False))
 
     return "\n".join(lines)
 
@@ -162,7 +161,7 @@ class Task:
 
     def get_schema_description(self) -> str:
         """Return a human-readable description of the dev frame's schema."""
-        # Dev frame only: the dtypes, example values and sample rows below are
+        # Dev frame only: the dtypes and example values below are
         # shown to the agents through print_dataset_schema, so sourcing them from
         # the full CSV would leak the holdout's contents into the feature search.
         return render_schema_description(self._dev, target_column=self.target_column,
