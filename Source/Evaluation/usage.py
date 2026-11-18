@@ -31,20 +31,23 @@ _COUNT_KEYS = {
 class TokenUsage:
     """Token counts for one message, one agent or a whole run.
 
-    ``cached_input_tokens`` is the cache-read part of ``input_tokens``, not an extra
-    amount; it is billed at the model's cached rate.
+    ``cached_input_tokens`` (cache reads) and ``cache_write_input_tokens`` (cache
+    writes) are parts of ``input_tokens``, not extra amounts; each is billed at its
+    own rate (``ModelConfig.price_agent``).
     """
 
     input_tokens: int
     output_tokens: int
     total_tokens: int
     cached_input_tokens: int
+    cache_write_input_tokens: int = 0
 
     def __add__(self, other: "TokenUsage") -> "TokenUsage":
         return TokenUsage(self.input_tokens + other.input_tokens,
                           self.output_tokens + other.output_tokens,
                           self.total_tokens + other.total_tokens,
-                          self.cached_input_tokens + other.cached_input_tokens)
+                          self.cached_input_tokens + other.cached_input_tokens,
+                          self.cache_write_input_tokens + other.cache_write_input_tokens)
 
 
 NO_USAGE = TokenUsage(0, 0, 0, 0)
@@ -83,9 +86,10 @@ def normalize_usage(usage: Mapping[str, Any]) -> TokenUsage:
     """One message's ``usage_metadata`` as a ``TokenUsage``.
 
     Input and output counts are required under either the LangChain or the OpenAI
-    name. ``total_tokens`` defaults to their sum. The cache-read count is optional
-    (Ollama and providers without prompt caching never report one, and there it truly
-    is 0) and is capped at ``input_tokens``.
+    name. ``total_tokens`` defaults to their sum. The cache-read and cache-write counts
+    are optional (Ollama and any provider that does not report them leave them at 0);
+    together they are capped at ``input_tokens``. LangChain reports both Claude's and
+    Azure OpenAI's cache writes under the same keys.
     """
     counts: Dict[str, int] = {}
     for ours, names in _COUNT_KEYS.items():
@@ -96,11 +100,17 @@ def normalize_usage(usage: Mapping[str, Any]) -> TokenUsage:
     total = int(usage["total_tokens"]) if "total_tokens" in usage \
         else counts["input_tokens"] + counts["output_tokens"]
     details = usage.get("input_token_details") or {}
-    cached = int(details.get("cache_read") or 0)
+    cached = min(int(details.get("cache_read") or 0), counts["input_tokens"])
+    # LangChain reports Claude's cache writes under "cache_creation", or, when the
+    # response breaks them down by cache lifetime, under the ephemeral_* keys with
+    # "cache_creation" set to 0 so nothing is counted twice; the sum covers both.
+    written = sum(int(details.get(key) or 0) for key in
+                  ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"))
     return TokenUsage(input_tokens=counts["input_tokens"],
                       output_tokens=counts["output_tokens"],
                       total_tokens=total,
-                      cached_input_tokens=min(cached, counts["input_tokens"]))
+                      cached_input_tokens=cached,
+                      cache_write_input_tokens=min(written, counts["input_tokens"] - cached))
 
 
 @typechecked
@@ -146,7 +156,8 @@ def price_usage(usage: RunUsage, role_to_model: Dict[str, str],
         role: AgentCost(model=role_to_model[role], usage=tokens,
                         cost_usd=config.price_agent(role_to_model[role], tokens.input_tokens,
                                                     tokens.output_tokens,
-                                                    tokens.cached_input_tokens))
+                                                    tokens.cached_input_tokens,
+                                                    tokens.cache_write_input_tokens))
         for role, tokens in usage.per_agent.items()
     }
     return RunCost(per_agent=per_agent, usage=usage.total,
