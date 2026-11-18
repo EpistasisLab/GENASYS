@@ -53,7 +53,8 @@ _COUNT_METRICS = ("n_folds", "n_rows")
 TEAM_EVALUATION_COLUMNS = (
     "generation", "team_id", "eval_index", "attempts", "status", "performance",
     *_METRIC_COLUMNS,
-    "input_tokens", "output_tokens", "cached_input_tokens", "token_count", "cost_usd",
+    "input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens",
+    "token_count", "cost_usd",
     "eval_seconds", "eval_minutes",
     "n_features", "n_accepted", "n_rejected", "n_pending", "feature_names", "run_status")
 
@@ -74,7 +75,8 @@ def attempt_dir(out_dir: str, attempt: int) -> str:
 # ------------------------------------ team.txt ---------------------------------------------
 
 @typechecked
-def write_team_roster(path: str, team: Team, team_id: int, recursion_limit: int) -> None:
+def write_team_roster(path: str, team: Team, team_id: int, recursion_limit: int,
+                      model_call_limit: int) -> None:
     """The team as evaluated: lineage, then the Supervisor and each worker's blueprint."""
     roster = team.get_roster()
     workers = sorted(role for role in roster if role != "supervisor")
@@ -84,6 +86,7 @@ def write_team_roster(path: str, team: Team, team_id: int, recursion_limit: int)
              f"variation: {team.get_variation()}",
              f"parents: ({parent0}, {parent1})",
              f"recursion_limit: {recursion_limit}",
+             f"model_call_limit: {model_call_limit}",
              f"team size: {len(roster)} (1 supervisor + {len(workers)} "
              f"worker{'' if len(workers) == 1 else 's'})",
              f"supervisor delegates to: {', '.join(workers) if workers else '(none: single agent)'}"]
@@ -198,11 +201,13 @@ def write_run_history(path: str, run: GraphRun, result: EvalResult) -> None:
                    + (_performance(r) if r.score is not None else "0 (not scored)"))
     summary += [f"eval_seconds: {r.eval_seconds:.2f}",
                 f"tokens: {usage.total_tokens:,} (input {usage.input_tokens:,}, output "
-                f"{usage.output_tokens:,}, cached input {usage.cached_input_tokens:,})",
+                f"{usage.output_tokens:,}, cached input {usage.cached_input_tokens:,}, "
+                f"cache writes {usage.cache_write_input_tokens:,})",
                 f"cost_usd: {r.cost.total_usd:.6f}"]
     for role, agent in r.cost.per_agent.items():
-        summary.append(f"  {role} ({agent.model}): {agent.usage.total_tokens:,} tokens, "
-                       f"${agent.cost_usd:.6f}")
+        summary.append(f"  {role} ({agent.model}): {agent.usage.total_tokens:,} tokens "
+                       f"(cached input {agent.usage.cached_input_tokens:,}, cache writes "
+                       f"{agent.usage.cache_write_input_tokens:,}), ${agent.cost_usd:.6f}")
     if r.score is not None:
         summary += ["metrics: " + json.dumps(r.score.metrics, sort_keys=True)]
     summary += ["", f"feature decisions ({len(r.outcome.decisions)}), "
@@ -264,7 +269,7 @@ def append_team_evaluation(csv_path: str, result: EvalResult) -> None:
            f"{r.performance:.6f}",
            *[_metric(metrics, key) for key in _METRIC_COLUMNS],
            usage.input_tokens, usage.output_tokens, usage.cached_input_tokens,
-           usage.total_tokens, f"{r.cost.total_usd:.6f}",
+           usage.cache_write_input_tokens, usage.total_tokens, f"{r.cost.total_usd:.6f}",
            f"{r.eval_seconds:.2f}", f"{r.eval_seconds / 60.0:.2f}",
            len(names), r.outcome.n_accepted, r.outcome.n_rejected, r.outcome.n_pending,
            # "; " rather than ",": catalog names contain commas and " | ".
