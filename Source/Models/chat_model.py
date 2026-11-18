@@ -46,6 +46,14 @@ from .model_config import CONNECTION_ARGUMENTS, ModelConfig, ModelSpec
 # with an Azure base URL and key.
 _INIT_PROVIDER = {"azure_anthropic": "anthropic"}
 
+# Prompt caching for every Claude model. A top-level cache_control caches the prompt up
+# to the latest message, and the cache moves forward as an agent's history grows.
+# Azure OpenAI caches repeated input by itself; Anthropic caches only when a request
+# asks, so without this a Claude agent pays the full input price for its whole history
+# on every call, and the cost objective would penalize Claude for a setup difference.
+# 5-minute lifetime; writes are priced by cache_write_input_per_million.
+_ANTHROPIC_CACHE_CONTROL = {"type": "ephemeral"}
+
 # Stand-in credentials for check_param_names: a client needs a key and an endpoint to
 # be built, but nothing is sent. The real environment is never read for that check.
 _PLACEHOLDER_KEY = "placeholder"
@@ -143,6 +151,8 @@ def _arguments(blueprint: BluePrint, model_config: ModelConfig, resource: int,
     for name, value in params.items():
         kwargs[name] = value.item() if isinstance(value, np.generic) else value
     connect(spec, kwargs, model_config, resource, env)
+    if kwargs["model_provider"] == "anthropic":
+        kwargs["model_kwargs"] = {"cache_control": dict(_ANTHROPIC_CACHE_CONTROL)}
     return spec, kwargs
 
 
