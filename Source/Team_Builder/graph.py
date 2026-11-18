@@ -46,6 +46,7 @@ from ..Factories.base_factory import AgentFactory, team_placeholders, team_revie
 from ..Factories.factory_set import FactorySet
 from ..Knowledge.knowledge_graph import kg_schema_summary
 from ..Models.model_config import ModelConfig
+from .call_budget import ModelCallBudget, WorkerBudget, budget_hook
 from .handoff import HandoffInput, create_task_handoff_tool
 from .team import Team
 from .topology import SUPERVISOR
@@ -124,6 +125,8 @@ class TeamGraphBuilder:
         # graph no such role runs, so rendering one fails on the missing placeholder.
         if resources.kg is not None:
             self.task_subs["kg_schema_summary"] = kg_schema_summary(resources.kg.schema())
+        # Model calls one run may make, across every agent (see call_budget.py).
+        self.model_call_limit = model_config.model_call_limit
         self.build_model: ModelBuilder = build_model or (
             lambda blueprint: build_chat_model(blueprint, model_config, resource))
         silence_supervisor_remaining_steps_warning()
@@ -133,13 +136,17 @@ class TeamGraphBuilder:
         roster = team.get_roster()
         hub, workers = self.team_factories(roster)
         everyone: List[AgentFactory] = [hub, *workers]
+        # One count for the whole run, new for every graph so no attempt inherits it.
+        budget = ModelCallBudget(self.model_call_limit)
 
         compiled_workers = [
             create_agent(model=self.build_model(roster[w.role_name]),
                          tools=w.tools(everyone, self.resources), name=w.role_name,
                          system_prompt=self._render(w, everyone, "system") + "\n\n"
                          + self._render(w, everyone, "user"),
-                         state_schema=WorkerState, middleware=[HandoffInput(w.role_name)])
+                         state_schema=WorkerState,
+                         middleware=[HandoffInput(w.role_name),
+                                     WorkerBudget(budget, w.role_name)])
             for w in workers]
 
         handoffs = [create_task_handoff_tool(agent_name=w.role_name, name=w.call_tool_name,
@@ -153,6 +160,7 @@ class TeamGraphBuilder:
                                 tools=[*hub_tools, *handoffs],
                                 prompt=self._render(hub, everyone, "system"),
                                 state_schema=TeamState,
+                                pre_model_hook=budget_hook(budget, SUPERVISOR),
                                 supervisor_name=SUPERVISOR).compile()
         return TeamGraph(app=app, kickoff_message=self._render(hub, everyone, "user"),
                          review_fields=team_review_fields(everyone),
