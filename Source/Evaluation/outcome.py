@@ -22,6 +22,7 @@ from langgraph.errors import GraphRecursionError
 from typeguard import typechecked
 
 from ..Agents.state import pending_entries
+from ..Team_Builder.call_budget import ModelCallLimit
 from .run_graph import GraphRun, TeamTimeLimit
 
 # What LangGraph's prebuilt ReAct agent (which runs the Supervisor) says instead of
@@ -39,7 +40,7 @@ class RunStatus(str, Enum):
     """How a run ended. Only FINALIZED runs are scored."""
 
     FINALIZED = "finalized"   # return_final_feature_set ran
-    TRUNCATED = "truncated"   # ran out of steps (recursion limit or step budget) or time
+    TRUNCATED = "truncated"   # ran out of model calls, steps (recursion limit or step budget) or time
     STOPPED = "stopped"       # ended without finalizing, e.g. a turn with only text
     ERROR = "error"           # the graph raised; traceback in run_history.log
     PROVIDER = "provider"     # the model provider failed; retried by the evaluator
@@ -109,6 +110,9 @@ def run_status(run: GraphRun) -> Tuple[RunStatus, str]:
     if run.error_type == GraphRecursionError.__name__:
         return RunStatus.TRUNCATED, ("hit recursion_limit before return_final_feature_set; "
                                      "raise recursion_limit")
+    if run.error_type == ModelCallLimit.__name__:
+        return RunStatus.TRUNCATED, (f"{run.error}; it never reached "
+                                     f"return_final_feature_set")
     if run.error_type == TeamTimeLimit.__name__:
         return RunStatus.TRUNCATED, (f"{run.error} before return_final_feature_set; "
                                      f"raise team_time_limit_s")
