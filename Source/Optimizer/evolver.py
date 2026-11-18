@@ -280,6 +280,7 @@ class EA:
         self.eval_cnt = eval_cnt
 
         self.recursion_limit = self.model_config.recursion_limit
+        self.model_call_limit = self.model_config.model_call_limit
         # The factories decide which roles exist; topology_rules decides which
         # teams of them are allowed. Checked together, so a run never breeds a
         # team it cannot build.
@@ -307,14 +308,16 @@ class EA:
         # by genome, hands each new team a sequential integer id (which is what
         # offspring lineage is recorded against), and stores the full evaluation
         # record so a re-created genome need never be re-evaluated.
-        self.archive: Archive = Archive(recursion_limit=self.recursion_limit)
+        self.archive: Archive = Archive(recursion_limit=self.recursion_limit,
+                                        model_call_limit=self.model_call_limit)
 
         # Read-only history from other runs: teams these replicates already
         # evaluated are replayed rather than re-evaluated here (see collect_
         # teams_to_evaluate).
         archive_list = archive_list or []
         self.seen_archive: SeenArchive = SeenArchive.from_paths(
-            archive_list, recursion_limit=self.recursion_limit)
+            archive_list, recursion_limit=self.recursion_limit,
+            model_call_limit=self.model_call_limit)
         if len(self.seen_archive):
             print(f"Loaded {len(self.seen_archive)} previously-evaluated teams from "
                   f"{len(archive_list)} external archive(s); matching candidates will "
