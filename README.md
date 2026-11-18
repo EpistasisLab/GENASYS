@@ -47,7 +47,7 @@ and sampling parameters (its *blueprint*):
 **One evaluation** runs the team's LangGraph graph until the Supervisor calls
 `return_final_feature_set`. The committed features are encoded and scored by stratified
 5-fold cross-validation within the dev split. Token usage is priced per model and total
-token usage (input, output, cached) is recorded. Each team is evaluated `--eval_cnt` times;
+token usage (input, output, cache reads and cache writes) is recorded. Each team is evaluated `--eval_cnt` times;
 its median ROC-AUC and its cost are its two objectives.
 
 **Evolution** follows NSGA-II. Offspring come from crossover or mutation: adding or
@@ -113,6 +113,7 @@ Every model listed under `models` is in the gene pool. Per model:
 | `provider`                                | `ollama`, `azure_openai`, `azure_ai` or `azure_anthropic`                                           |
 | `endpoint`                                | Server URL (for Ollama, `http://host:port`)                                                         |
 | `input_per_million`, `output_per_million` | Price per million tokens                                                                            |
+| `cached_input_per_million`, `cache_write_input_per_million` | Price per million cache-read and cache-write input tokens; each defaults to the input rate |
 | `param_space`                             | Each knob's allowed values; knobs with several values evolve, single-value knobs are fixed settings |
 
 For local models, the price equals the **active** parameter count in billions (mixture-of-experts
@@ -122,7 +123,8 @@ Run-wide settings, all required except the last:
 
 | Key                                            | Meaning                                                                |
 | ---------------------------------------------- | ---------------------------------------------------------------------- |
-| `recursion_limit`                              | Graph steps a team may take before it is cut off                       |
+| `model_call_limit`                             | Model calls one run may make, across every agent; the run's budget     |
+| `recursion_limit`                              | Graph steps a team may take; a safety backstop above `model_call_limit` |
 | `request_timeout_s`, `default_max_retries`     | Per-request timeout and retries                                        |
 | `team_retry_attempts`, `team_retry_delay_secs` | Re-runs of a team after a provider failure                             |
 | `abort_after_consecutive_infra_failures`       | Provider-failed teams in a row before the run aborts                   |
@@ -177,7 +179,7 @@ reliable sign of progress.
 | ----------- | ---------------------------------------------------------------- | ------ |
 | `finalized` | `return_final_feature_set` was called                            | yes    |
 | `stopped`   | Ended without finalizing, for example an empty or text-only turn | 0      |
-| `truncated` | Hit `recursion_limit` or `team_time_limit_s`                     | 0      |
+| `truncated` | Hit `model_call_limit`, `recursion_limit` or `team_time_limit_s` | 0      |
 | `error`     | The graph raised, including a malformed tool call from the model | 0      |
 | `provider`  | The server failed (timeout, connection, 5xx) on every retry      | 0      |
 
