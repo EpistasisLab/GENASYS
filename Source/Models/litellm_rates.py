@@ -31,10 +31,13 @@ def _litellm_table() -> Dict[str, Any]:
 
 
 def litellm_rates(provider: str, name: str, azure_deployment: Optional[str]
-                  ) -> Optional[Tuple[float, float, Optional[float]]]:
-    """(input, output, cached_input) USD per million from litellm, or None.
+                  ) -> Optional[Tuple[float, float, Optional[float], Optional[float]]]:
+    """(input, output, cached_input, cache_write) USD per million from litellm, or None.
 
-    litellm stores dollars per token, so the per-million conversion happens here.
+    cached_input is the rate for reading a prompt cache, cache_write the rate for
+    writing one (Anthropic bills a 5-minute cache write at 1.25x input); either is None
+    when litellm lists none. litellm stores dollars per token, so the per-million
+    conversion happens here.
     """
     if provider not in LITELLM_PREFIXES:
         return None
@@ -48,7 +51,9 @@ def litellm_rates(provider: str, name: str, azure_deployment: Optional[str]
         entry = table.get(f"{prefix}{key}") or table.get(str(key))
         if entry and entry.get("input_cost_per_token") is not None:
             cached = entry.get("cache_read_input_token_cost")
+            write = entry.get("cache_creation_input_token_cost")
             return (float(entry["input_cost_per_token"]) * 1e6,
                     float(entry.get("output_cost_per_token") or 0.0) * 1e6,
-                    None if cached is None else float(cached) * 1e6)
+                    None if cached is None else float(cached) * 1e6,
+                    None if write is None else float(write) * 1e6)
     return None
