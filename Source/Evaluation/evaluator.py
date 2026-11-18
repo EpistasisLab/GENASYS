@@ -94,7 +94,8 @@ class Evaluator:
         out_dir = eval_dir(self.run_dir, team_id, eval_index)
         os.makedirs(out_dir, exist_ok=True)
         write_team_roster(os.path.join(out_dir, "team.txt"), team, team_id,
-                          self.model_config.recursion_limit)
+                          self.model_config.recursion_limit,
+                          self.model_config.model_call_limit)
 
         max_attempts = self.model_config.team_retry_attempts + 1
         workers = sorted(role for role in team.get_roster() if role != SUPERVISOR)
