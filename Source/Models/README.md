@@ -5,7 +5,7 @@ Which models exist, what they cost, and how one is connected.
 | Module | Contents |
 |---|---|
 | `model_config.py` | `ModelConfig` / `ModelSpec` from `model_config.json`: models, providers, prices, `param_space`, retry and limit settings. Also `CONNECTION_ARGUMENTS`. |
-| `litellm_rates.py` | `litellm_rates(provider, name, deployment)`: per-million rates from litellm, or None. |
+| `litellm_rates.py` | `litellm_rates(provider, name, deployment)`: per-million input, output, cache-read and cache-write rates from litellm, or None. |
 | `credentials.py` | `require_credentials`, `load_dotenv_once`, `package_for_provider`. |
 | `resources.py` | Numbered Azure resources `R{n}_`: `detect_resource_count`, endpoint/key readers, `foundry_root`. `ResourceAllocator` assigns each in-flight evaluation a resource, so no two share a (resource, model) deployment. |
 | `chat_model.py` | `build_chat_model(blueprint, model_config, resource)`, `knob_settings`, `check_param_names`. |
