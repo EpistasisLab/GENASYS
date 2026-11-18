@@ -35,7 +35,7 @@ VALID_PRICING_SOURCES = (PRICING_SOURCE_LITELLM, PRICING_SOURCE_CONFIG)
 CONNECTION_ARGUMENTS = frozenset({
     "model", "model_provider", "max_retries", "timeout", "azure_deployment",
     "api_version", "azure_endpoint", "api_key", "endpoint", "credential", "base_url",
-    "client_kwargs"})
+    "client_kwargs", "model_kwargs"})
 
 # Providers reached through an Azure AI Foundry resource root.
 _FOUNDRY_PROVIDERS = ("azure_ai", "azure_anthropic")
@@ -103,6 +103,9 @@ class ModelSpec:
     output_per_million: float = 0.0
     # Discounted cached-input rate. None => bill cached input at the full input rate.
     cached_input_per_million: Optional[float] = None
+    # Rate for writing input to a prompt cache (Anthropic bills a 5-minute cache write
+    # at 1.25x input). None => bill cache writes at the full input rate.
+    cache_write_input_per_million: Optional[float] = None
 
     # knob name -> allowed values the EA may set/mutate. A knob absent here is never
     # set for this model. Seeds the initial population and bounds mutations.
@@ -127,6 +130,9 @@ class ModelSpec:
         cached = entry.get("cached_input_per_million")
         if cached is not None and float(cached) < 0:
             raise ValueError(f"model '{name}': cached_input_per_million must not be negative")
+        write = entry.get("cache_write_input_per_million")
+        if write is not None and float(write) < 0:
+            raise ValueError(f"model '{name}': cache_write_input_per_million must not be negative")
 
         return cls(
             name=name,
@@ -137,6 +143,7 @@ class ModelSpec:
             input_per_million=rates[0],
             output_per_million=rates[1],
             cached_input_per_million=None if cached is None else float(cached),
+            cache_write_input_per_million=None if write is None else float(write),
             param_space=cls._validate_param_space(name, entry.get("param_space")),
             # Optional per-model override of the run-wide request_timeout_s.
             request_timeout_s=(_positive_seconds(f"model '{name}': request_timeout_s",
@@ -195,7 +202,7 @@ class ModelConfig:
     # Top-level keys model_config.json must set; none has a default.
     _REQUIRED_SETTINGS: ClassVar[Tuple[str, ...]] = (
         "pricing_source", "default_max_retries", "request_timeout_s",
-        "recursion_limit", "team_retry_attempts", "team_retry_delay_secs",
+        "recursion_limit", "model_call_limit", "team_retry_attempts", "team_retry_delay_secs",
         "abort_after_consecutive_infra_failures", "models")
 
     def __init__(self,
@@ -210,7 +217,8 @@ class ModelConfig:
         self.source = str(path)
 
         # Every run-wide setting is required: a silent default would change how a
-        # run behaves (and, for recursion_limit, which archives it matches)
+        # run behaves (and, for recursion_limit and model_call_limit, which archives it
+        # matches)
         # without the config saying so.
         missing = [key for key in self._REQUIRED_SETTINGS if key not in raw]
         if missing:
@@ -227,9 +235,14 @@ class ModelConfig:
             "default_max_retries", raw["default_max_retries"], minimum=1)
         self.request_timeout_s = _positive_seconds(
             "request_timeout_s", raw["request_timeout_s"])
-        # Graph super-steps a team may take; also part of every archive key.
+        # Graph super-steps a team may take; also part of every archive key. A safety
+        # backstop: model_call_limit is the run's real budget.
         self.recursion_limit = _whole_number(
             "recursion_limit", raw["recursion_limit"], minimum=1)
+        # Model calls one run may make, across every agent on the team; going past it
+        # stops the run as truncated. Also part of every archive key.
+        self.model_call_limit = _whole_number(
+            "model_call_limit", raw["model_call_limit"], minimum=1)
         # Re-runs of a whole team after a provider failure, on top of the first
         # attempt; 0 means never retry.
         self.team_retry_attempts = _whole_number(
@@ -364,15 +377,23 @@ class ModelConfig:
     # --- pricing ------------------------------------------------------------
 
     def price_agent(self, model: str, input_tokens: int, output_tokens: int,
-                    cached_input_tokens: int = 0) -> float:
-        """USD for one agent's token usage under ``model``'s rates."""
+                    cached_input_tokens: int = 0, cache_write_input_tokens: int = 0) -> float:
+        """USD for one agent's token usage under ``model``'s rates.
+
+        ``input_tokens`` is all input, cache reads and cache writes included (as
+        LangChain reports it); each part is billed at its own rate.
+        """
         spec = self.get(model)
         cached = max(0, int(cached_input_tokens))
-        billable_input = max(0, int(input_tokens) - cached)
+        written = max(0, int(cache_write_input_tokens))
+        billable_input = max(0, int(input_tokens) - cached - written)
         cached_rate = (spec.input_per_million if spec.cached_input_per_million is None
                        else spec.cached_input_per_million)
+        write_rate = (spec.input_per_million if spec.cache_write_input_per_million is None
+                      else spec.cache_write_input_per_million)
         return (billable_input * spec.input_per_million / 1_000_000.0
                 + cached * cached_rate / 1_000_000.0
+                + written * write_rate / 1_000_000.0
                 + max(0, int(output_tokens)) * spec.output_per_million / 1_000_000.0)
 
     @staticmethod
@@ -390,7 +411,7 @@ class ModelConfig:
                      f"and the config gives none either — it will be costed at ZERO.")
             return spec
 
-        in_m, out_m, cached_m = rates
+        in_m, out_m, cached_m, write_m = rates
         if spec.priced and not (_rates_agree(spec.input_per_million, in_m)
                                 and _rates_agree(spec.output_per_million, out_m)):
             warn(f"'{name}': config says ${spec.input_per_million:.4f}/"
@@ -398,7 +419,8 @@ class ModelConfig:
                  f"${in_m:.4f}/${out_m:.4f}. Using litellm's. Update the config so "
                  f"its fallback rates are right too.")
         return replace(spec, input_per_million=in_m, output_per_million=out_m,
-                       cached_input_per_million=cached_m)
+                       cached_input_per_million=cached_m,
+                       cache_write_input_per_million=write_m)
 
     def has_priced_models(self) -> bool:
         """True if any model-pool model carries a non-zero rate.
